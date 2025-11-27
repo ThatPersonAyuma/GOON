@@ -6,6 +6,7 @@ import shutil
 
 from ds.stack import Stack
 from ds.treenode import TreeNode
+from ds.gapbuffer import GapBuffer
 import tkinter.simpledialog as tk_simpledialog
 tk.simpledialog = tk_simpledialog
 
@@ -24,6 +25,8 @@ class NoteApp:
         
         self.current_file = None
         self.is_modified = False
+        
+        self.gap_buffer = GapBuffer()
         
         self.setup_ui()
         self.bind_shortcuts()
@@ -168,13 +171,17 @@ class NoteApp:
         self.current_node = node
         self.title_entry.delete(0, tk.END)
         self.title_entry.insert(0, node.name.replace('.goon', ''))
+        
         self.text_editor.delete('1.0', tk.END)
         self.text_editor.insert('1.0', node.content)
+        
+        self.gap_buffer.set_text(node.content)
+        
         self.is_modified = False
         self.undo_stack.clear()
         self.redo_stack.clear()
         self.last_saved_content = node.content
-        self.status_bar.config(text=f"Loaded: {node.get_path()}")
+        self.status_bar.config(text=f"Loaded: {node.get_path()} [GapBuffer: {self.gap_buffer.get_gap_info()['text_length']} chars]")
     
     def new_note(self):
         if not self.project_folder:
@@ -264,7 +271,7 @@ class NoteApp:
             return
         
         if self.current_node and not self.current_node.is_folder:
-            content = self.text_editor.get('1.0', tk.END).strip()
+            content = self.gap_buffer.get_text()
             self.current_node.content = content
             
             new_name = self.title_entry.get().strip()
@@ -288,7 +295,8 @@ class NoteApp:
                     f.write(content)
                 self.is_modified = False
                 self.refresh_tree()
-                self.status_bar.config(text=f"Saved: {self.current_node.name}")
+                gap_info = self.gap_buffer.get_gap_info()
+                self.status_bar.config(text=f"Saved: {self.current_node.name} [GapBuffer: {gap_info['text_length']} chars, gap size: {gap_info['gap_size']}]")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save: {e}")
         else:
@@ -357,6 +365,9 @@ class NoteApp:
     def on_text_change(self, event):
         if self.current_node and not self.is_modified:
             self.is_modified = True
+        
+        current_text = self.text_editor.get('1.0', tk.END).strip()
+        self.gap_buffer.set_text(current_text)
         
         if self.typing_timer:
             self.root.after_cancel(self.typing_timer)
