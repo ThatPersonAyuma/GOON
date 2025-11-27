@@ -1,9 +1,11 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import json
+import os
+import shutil
 
-from stack import Stack
-from treenode import TreeNode
+from ds.stack import Stack
+from ds.treenode import TreeNode
 import tkinter.simpledialog as tk_simpledialog
 tk.simpledialog = tk_simpledialog
 
@@ -18,6 +20,7 @@ class NoteApp:
         
         self.root_node = TreeNode("Root", is_folder=True)
         self.current_node = None
+        self.project_folder = None
         
         self.current_file = None
         self.is_modified = False
@@ -31,12 +34,13 @@ class NoteApp:
         
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="New Project", command=self.new_project)
+        file_menu.add_command(label="Open Project", command=self.open_project)
+        file_menu.add_separator()
         file_menu.add_command(label="New Note", command=self.new_note)
         file_menu.add_command(label="New Folder", command=self.new_folder)
         file_menu.add_command(label="Save", command=self.save_note)
         file_menu.add_command(label="Save As...", command=self.save_note_as)
-        file_menu.add_command(label="Open Project", command=self.open_project)
-        file_menu.add_command(label="Save Project", command=self.save_project)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
         
@@ -150,6 +154,17 @@ class NoteApp:
             elif response is None:
                 return
         
+        if not self.project_folder:
+            return
+        
+        file_path = self._get_node_path(node)
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            node.content = content
+        else:
+            node.content = ""
+        
         self.current_node = node
         self.title_entry.delete(0, tk.END)
         self.title_entry.insert(0, node.name.replace('.goon', ''))
@@ -162,6 +177,10 @@ class NoteApp:
         self.status_bar.config(text=f"Loaded: {node.get_path()}")
     
     def new_note(self):
+        if not self.project_folder:
+            messagebox.showwarning("No Project", "Please create or open a project first")
+            return
+        
         selection = self.tree_view.selection()
         parent_node = self.root_node
         
@@ -177,10 +196,19 @@ class NoteApp:
                 name += '.goon'
             new_note = TreeNode(name, is_folder=False, content="")
             parent_node.add_child(new_note)
+            
+            file_path = self._get_node_path(new_note)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write("")
+            
             self.refresh_tree()
             self.status_bar.config(text=f"Created: {name}")
     
     def new_folder(self):
+        if not self.project_folder:
+            messagebox.showwarning("No Project", "Please create or open a project first")
+            return
+        
         selection = self.tree_view.selection()
         parent_node = self.root_node
         
@@ -194,10 +222,17 @@ class NoteApp:
         if name:
             new_folder = TreeNode(name, is_folder=True)
             parent_node.add_child(new_folder)
+            
+            folder_path = self._get_node_path(new_folder)
+            os.makedirs(folder_path, exist_ok=True)
+            
             self.refresh_tree()
             self.status_bar.config(text=f"Created folder: {name}")
     
     def delete_item(self):
+        if not self.project_folder:
+            return
+        
         selection = self.tree_view.selection()
         if selection:
             tree_id = selection[0]
@@ -205,6 +240,16 @@ class NoteApp:
             if node and node.parent:
                 response = messagebox.askyesno("Delete", f"Delete '{node.name}'?")
                 if response:
+                    item_path = self._get_node_path(node)
+                    try:
+                        if node.is_folder:
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to delete: {e}")
+                        return
+                    
                     node.parent.remove_child(node)
                     if self.current_node == node:
                         self.current_node = None
@@ -214,16 +259,38 @@ class NoteApp:
                     self.status_bar.config(text=f"Deleted: {node.name}")
     
     def save_note(self):
+        if not self.project_folder:
+            messagebox.showwarning("No Project", "Please create or open a project first")
+            return
+        
         if self.current_node and not self.current_node.is_folder:
-            self.current_node.content = self.text_editor.get('1.0', tk.END).strip()
+            content = self.text_editor.get('1.0', tk.END).strip()
+            self.current_node.content = content
+            
             new_name = self.title_entry.get().strip()
             if new_name and not new_name.endswith('.goon'):
                 new_name += '.goon'
-            if new_name:
+            
+            old_path = self._get_node_path(self.current_node)
+            
+            if new_name and new_name != self.current_node.name:
                 self.current_node.name = new_name
-            self.is_modified = False
-            self.refresh_tree()
-            self.status_bar.config(text=f"Saved: {self.current_node.name}")
+                new_path = self._get_node_path(self.current_node)
+                try:
+                    os.rename(old_path, new_path)
+                    old_path = new_path
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to rename: {e}")
+                    return
+            
+            try:
+                with open(old_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                self.is_modified = False
+                self.refresh_tree()
+                self.status_bar.config(text=f"Saved: {self.current_node.name}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save: {e}")
         else:
             messagebox.showwarning("No Note", "No note selected to save")
     
@@ -239,46 +306,53 @@ class NoteApp:
                     f.write(content)
                 self.status_bar.config(text=f"Saved to: {filepath}")
     
-    def save_project(self):
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        if filepath:
-            project_data = self._serialize_tree(self.root_node)
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(project_data, f, indent=2, ensure_ascii=False)
-            self.status_bar.config(text=f"Project saved: {filepath}")
-    
-    def open_project(self):
-        filepath = filedialog.askopenfilename(
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        if filepath:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                project_data = json.load(f)
-            self.root_node = self._deserialize_tree(project_data)
+    def new_project(self):
+        folder_path = filedialog.askdirectory(title="Select folder for new project")
+        if folder_path:
+            self.project_folder = folder_path
+            self.root_node = TreeNode("Root", is_folder=True)
             self.current_node = None
             self.text_editor.delete('1.0', tk.END)
             self.title_entry.delete(0, tk.END)
             self.refresh_tree()
-            self.status_bar.config(text=f"Project loaded: {filepath}")
+            self.status_bar.config(text=f"New project: {folder_path}")
     
-    def _serialize_tree(self, node):
-        data = {
-            'name': node.name,
-            'is_folder': node.is_folder,
-            'content': node.content,
-            'children': [self._serialize_tree(child) for child in node.children]
-        }
-        return data
+    def open_project(self):
+        folder_path = filedialog.askdirectory(title="Select project folder")
+        if folder_path:
+            self.project_folder = folder_path
+            self.root_node = TreeNode("Root", is_folder=True)
+            self._scan_folder(folder_path, self.root_node)
+            self.current_node = None
+            self.text_editor.delete('1.0', tk.END)
+            self.title_entry.delete(0, tk.END)
+            self.refresh_tree()
+            self.status_bar.config(text=f"Project opened: {folder_path}")
     
-    def _deserialize_tree(self, data, parent=None):
-        node = TreeNode(data['name'], data['is_folder'], data.get('content', ''), parent)
-        for child_data in data.get('children', []):
-            child = self._deserialize_tree(child_data, node)
-            node.children.append(child)
-        return node
+    def _scan_folder(self, folder_path, parent_node):
+        try:
+            items = sorted(os.listdir(folder_path))
+            for item in items:
+                item_path = os.path.join(folder_path, item)
+                if os.path.isdir(item_path):
+                    folder_node = TreeNode(item, is_folder=True)
+                    parent_node.add_child(folder_node)
+                    self._scan_folder(item_path, folder_node)
+                elif item.endswith('.goon'):
+                    note_node = TreeNode(item, is_folder=False)
+                    parent_node.add_child(note_node)
+        except Exception as e:
+            self.status_bar.config(text=f"Error scanning folder: {e}")
+    
+    def _get_node_path(self, node):
+        path_parts = []
+        current = node
+        while current and current != self.root_node:
+            path_parts.insert(0, current.name)
+            current = current.parent
+        return os.path.join(self.project_folder, *path_parts)
+    
+
     
     def on_text_change(self, event):
         if self.current_node and not self.is_modified:
@@ -290,7 +364,6 @@ class NoteApp:
         self.typing_timer = self.root.after(500, self.save_to_undo_stack)
     
     def save_to_undo_stack(self):
-        """Simpan state saat ini ke undo stack"""
         current_content = self.text_editor.get('1.0', tk.END).strip()
         
         if current_content != self.last_saved_content:
