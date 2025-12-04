@@ -1,0 +1,13 @@
+{
+  "name": "Root",
+  "is_folder": false,
+  "content": "Halo",
+  "children": [
+    {
+      "name": "Note A",
+      "is_folder": false,
+      "content": "Hello",
+      "children": []
+    }
+  ]
+}
