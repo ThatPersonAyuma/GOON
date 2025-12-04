@@ -28,6 +28,11 @@ class NoteApp:
         
         self.gap_buffer = GapBuffer()
         
+        self.editing_item = None
+        self.edit_entry = None
+        self.rename_gap_buffer = None
+        self.editing_node = None
+        
         self.setup_ui()
         self.bind_shortcuts()
         
@@ -42,6 +47,7 @@ class NoteApp:
         file_menu.add_separator()
         file_menu.add_command(label="New Note", command=self.new_note)
         file_menu.add_command(label="New Folder", command=self.new_folder)
+        file_menu.add_command(label="Rename", command=self.rename_item)
         file_menu.add_command(label="Save", command=self.save_note)
         file_menu.add_command(label="Save As...", command=self.save_note_as)
         file_menu.add_separator()
@@ -51,12 +57,15 @@ class NoteApp:
         menubar.add_cascade(label="Edit", menu=edit_menu)
         edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
         edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Rename", command=self.rename_item)
         
         toolbar = tk.Frame(self.root, bd=1, relief=tk.RAISED)
         toolbar.pack(side=tk.TOP, fill=tk.X)
         
         tk.Button(toolbar, text="New Note", command=self.new_note).pack(side=tk.LEFT, padx=2, pady=2)
         tk.Button(toolbar, text="New Folder", command=self.new_folder).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(toolbar, text="Rename", command=self.rename_item).pack(side=tk.LEFT, padx=2, pady=2)
         tk.Button(toolbar, text="Delete", command=self.delete_item).pack(side=tk.LEFT, padx=2, pady=2)
         tk.Button(toolbar, text="Save", command=self.save_note).pack(side=tk.LEFT, padx=2, pady=2)
         
@@ -81,6 +90,15 @@ class NoteApp:
         tree_scroll.config(command=self.tree_view.yview)
         
         self.tree_view.bind('<<TreeviewSelect>>', self.on_tree_select)
+        self.tree_view.bind('<Button-3>', self.show_context_menu)
+        self.tree_view.bind('<Double-Button-1>', lambda e: self.rename_item())
+        
+        self.context_menu = tk.Menu(self.tree_view, tearoff=0)
+        self.context_menu.add_command(label="Rename", command=self.rename_item)
+        self.context_menu.add_command(label="Delete", command=self.delete_item)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="New Note", command=self.new_note)
+        self.context_menu.add_command(label="New Folder", command=self.new_folder)
         
         self.refresh_tree()
         
@@ -109,6 +127,15 @@ class NoteApp:
         self.root.bind('<Control-z>', lambda e: self.undo())
         self.root.bind('<Control-y>', lambda e: self.redo())
         self.root.bind('<Control-s>', lambda e: self.save_note())
+        self.root.bind('<F2>', lambda e: self.rename_item())
+        self.root.bind('<Escape>', lambda e: self.cancel_inline_edit())
+        
+    
+    def show_context_menu(self, event):
+        item = self.tree_view.identify_row(event.y)
+        if item:
+            self.tree_view.selection_set(item)
+        self.context_menu.post(event.x_root, event.y_root)
         
     def refresh_tree(self):
         self.tree_view.delete(*self.tree_view.get_children())
@@ -235,7 +262,125 @@ class NoteApp:
             
             self.refresh_tree()
             self.status_bar.config(text=f"Created folder: {name}")
+            
     
+    def rename_item(self):
+        if not self.project_folder:
+            messagebox.showwarning("No Project", "Please create or open a project first")
+            return
+            
+        selection = self.tree_view.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select an item to rename")
+            return
+        
+        self.cancel_inline_edit()
+        
+        tree_id = selection[0]
+        node = self.find_node_by_tree_id(tree_id)
+        
+        if not node:
+            return
+        
+        self.editing_item = tree_id
+        self.editing_node = node
+        
+        bbox = self.tree_view.bbox(tree_id)
+        if not bbox:
+            return
+        
+        x, y, width, height = bbox
+        
+        current_name = node.name
+        if not node.is_folder and current_name.endswith('.goon'):
+            current_name = current_name[:-5]
+        
+        self.rename_gap_buffer = GapBuffer()
+        self.rename_gap_buffer.set_text(current_name)
+        
+        self.edit_entry = tk.Entry(self.tree_view, font=("Arial", 9))
+        self.edit_entry.place(x=x + 20, y=y, width=width - 20, height=height)
+        
+        self.edit_entry.insert(0, current_name)
+        self.edit_entry.selection_range(0, tk.END)
+        self.edit_entry.focus_set()
+        
+        self.edit_entry.bind('<Return>', self.finish_inline_edit)
+        self.edit_entry.bind('<Escape>', lambda e: self.cancel_inline_edit())
+        self.edit_entry.bind('<FocusOut>', lambda e: self.finish_inline_edit(None))
+        self.edit_entry.bind('<KeyRelease>', self.on_inline_edit_key)
+        
+        gap_info = self.rename_gap_buffer.get_gap_info()
+        self.status_bar.config(text=f"Renaming with GapBuffer [Length: {gap_info['text_length']}, Gap: {gap_info['gap_size']}] - Press Enter to save, Esc to cancel")
+
+    def on_inline_edit_key(self, event):
+        if not self.edit_entry or not self.rename_gap_buffer:
+            return
+        
+        current_text = self.edit_entry.get()
+        cursor_pos = self.edit_entry.index(tk.INSERT)
+        
+        self.rename_gap_buffer.set_text(current_text)
+        self.rename_gap_buffer.move_cursor(cursor_pos)
+        
+        gap_info = self.rename_gap_buffer.get_gap_info()
+        text_preview = self.rename_gap_buffer.get_text()[:30]
+        self.status_bar.config(
+            text=f"Editing: '{text_preview}...' [Len: {gap_info['text_length']}, Gap: [{gap_info['gap_start']}:{gap_info['gap_end']}], Size: {gap_info['gap_size']}]"
+        )
+
+    def finish_inline_edit(self, event):
+        if not self.edit_entry or not self.editing_node:
+            return
+        
+        new_name = self.rename_gap_buffer.get_text().strip()
+        
+        if new_name:
+            if not self.editing_node.is_folder and not new_name.endswith('.goon'):
+                new_name += '.goon'
+            
+            if self.editing_node.parent:
+                for sibling in self.editing_node.parent.children:
+                    if sibling != self.editing_node and sibling.name == new_name:
+                        messagebox.showerror("Error", f"An item with name '{new_name}' already exists!")
+                        self.cancel_inline_edit()
+                        return
+            
+            old_name = self.editing_node.name
+            old_path = self._get_node_path(self.editing_node)
+            
+            self.editing_node.name = new_name
+            new_path = self._get_node_path(self.editing_node)
+            
+            try:
+                if os.path.exists(old_path):
+                    os.rename(old_path, new_path)
+                
+                if self.current_node == self.editing_node:
+                    self.title_entry.delete(0, tk.END)
+                    self.title_entry.insert(0, new_name.replace('.goon', ''))
+                
+                self.status_bar.config(text=f"Renamed: '{old_name}' → '{new_name}' [GapBuffer used]")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to rename: {e}")
+                self.editing_node.name = old_name
+        
+        self.cancel_inline_edit()
+        self.refresh_tree()
+
+    def cancel_inline_edit(self):
+        """Cancel inline editing"""
+        if self.edit_entry:
+            self.edit_entry.destroy()
+            self.edit_entry = None
+        
+        self.editing_item = None
+        self.editing_node = None
+        self.rename_gap_buffer = None
+        
+        if self.status_bar.cget('text').startswith(('Editing', 'Renaming')):
+            self.status_bar.config(text="Ready")
+        
     def delete_item(self):
         if not self.project_folder:
             return
